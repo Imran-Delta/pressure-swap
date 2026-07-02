@@ -1,0 +1,16 @@
+[Unit]
+Description=Pressure-driven emergency swap management
+After=local-fs.target
+Before=swap.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pressure-swap.sh --oneshot
+OOMScoreAdjust=-1000
+StandardOutput=journal
+StandardError=journal
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run pressure-swap every 1 second
+Requires=pressure-swap.service
+
+[Timer]
+OnUnitActiveSec=1s
+AccuracySec=0.1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

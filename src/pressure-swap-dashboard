@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# pressure-swap-dashboard – Real-time display of swap hierarchy and PSI.
+# Reads the same /etc/pressure-swap.conf (or $PRESSURE_SWAP_CONFIG).
+
+# Defaults (overridden by config)
+SWAP_DIR="/pagefiles"
+PREFIX="emergency_chunk"
+SHOW_PSI=true
+REFRESH_SECONDS=1
+COLOR_OUTPUT=true
+# other variables from conf are also sourced
+
+if [[ -n "${PRESSURE_SWAP_CONFIG:-}" ]]; then
+    if [[ -f "$PRESSURE_SWAP_CONFIG" ]]; then
+        source "$PRESSURE_SWAP_CONFIG"
+    fi
+elif [[ -f /etc/pressure-swap.conf ]]; then
+    source /etc/pressure-swap.conf
+fi
+
+# Honour NO_COLOR
+if [[ -n "${NO_COLOR:-}" ]]; then
+    COLOR_OUTPUT=false
+fi
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+if [[ "$COLOR_OUTPUT" == false ]]; then
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
+
+# Check for required commands
+for cmd in swapon zramctl numfmt tput; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "$cmd not found, exiting." >&2
+        exit 1
+    fi
+done
+
+clear
+while true; do
+    tput cup 0 0
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}  PRESSURE-SWAP DASHBOARD  $(date '+%H:%M:%S')${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+
+    # ── zram ──
+    if zramctl | grep -q zram0; then
+        ZRAM_DATA=$(zramctl /dev/zram0 --output=DISKSIZE,DATA,COMPR,TOTAL,ALGORITHM)
+        echo -e "${YELLOW}◆ zram0 (prio 100)${NC}"
+        echo "$ZRAM_DATA" | tail -n +2 | while read -r size data compr total algo; do
+            echo "   Size: $size   Used: $data   Compressed: $compr   Alg: $algo"
+        done
+        BACKING=$(cat /sys/block/zram0/backing_dev 2>/dev/null)
+        if [ -n "$BACKING" ]; then
+            echo -e "   ${GREEN}Backing: $BACKING${NC}"
+        fi
+    else
+        echo -e "${RED}◆ zram0 not active${NC}"
+    fi
+    echo ""
+
+    # ── Raw swap partitions (all non‑emergency, non‑zram) ──
+    mapfile -t raw_swaps < <(swapon --show --bytes --noheadings | grep -v -e zram0 -e "$SWAP_DIR/$PREFIX")
+    if (( ${#raw_swaps[@]} > 0 )); then
+        for line in "${raw_swaps[@]}"; do
+            read -r dev type size used prio <<< "$line"
+            size_mb=$(( size / 1024 / 1024 ))
+            used_mb=$(( used / 1024 / 1024 ))
+            pct=$(( used * 100 / size ))
+            size_hr=$(numfmt --to=iec "$size" 2>/dev/null || echo "$size")
+            used_hr=$(numfmt --to=iec "$used" 2>/dev/null || echo "$used")
+            bar=$(printf "%0.s█" $(seq 1 $((pct/2))))
+            echo -e "${YELLOW}◆ $dev (prio $prio)${NC}"
+            echo -e "   Size: $size_hr   Used: $used_hr   ${GREEN}[$bar] $pct%${NC}"
+        done
+    else
+        echo -e "${RED}◆ No raw swap active${NC}"
+    fi
+    echo ""
+
+    # ── Emergency chunks ──
+    EMERGENCY=$(swapon --show --bytes | grep "$SWAP_DIR/$PREFIX")
+    if [ -n "$EMERGENCY" ]; then
+        COUNT=$(echo "$EMERGENCY" | wc -l)
+        TOTAL_SIZE=$(echo "$EMERGENCY" | awk '{sum+=$3} END {print sum}')
+        TOTAL_USED=$(echo "$EMERGENCY" | awk '{sum+=$4} END {print sum}')
+        SIZE_HR=$(numfmt --to=iec "$TOTAL_SIZE" 2>/dev/null || echo "$TOTAL_SIZE")
+        USED_HR=$(numfmt --to=iec "$TOTAL_USED" 2>/dev/null || echo "$TOTAL_USED")
+        echo -e "${YELLOW}◆ Emergency swap (prio $SWAP_PRIORITY) – $COUNT chunk(s)${NC}"
+        echo "   Total size: $SIZE_HR   Used: $USED_HR"
+        while read -r line; do
+            FILE=$(echo "$line" | awk '{print $1}')
+            SIZE=$(echo "$line" | awk '{print $3}')
+            USED=$(echo "$line" | awk '{print $4}')
+            SIZE_HR=$(numfmt --to=iec "$SIZE" 2>/dev/null || echo "$SIZE")
+            USED_HR=$(numfmt --to=iec "$USED" 2>/dev/null || echo "$USED")
+            echo "     $FILE : $SIZE_HR (used $USED_HR)"
+        done <<< "$EMERGENCY"
+    else
+        echo -e "${YELLOW}◆ Emergency swap: not active (idle)${NC}"
+    fi
+    echo ""
+
+    # ── PSI (if enabled) ──
+    if [[ "$SHOW_PSI" == true ]]; then
+        echo -e "${YELLOW}◆ Pressure (PSI) – IO / Memory${NC}"
+        if [[ -f /proc/pressure/io ]]; then
+            IO_PSI=$(grep -o 'avg60=[0-9.]*' /proc/pressure/io | head -1 | cut -d= -f2)
+        else
+            IO_PSI="N/A"
+        fi
+        if [[ -f /proc/pressure/memory ]]; then
+            MEM_PSI=$(grep -o 'avg60=[0-9.]*' /proc/pressure/memory | head -1 | cut -d= -f2)
+        else
+            MEM_PSI="N/A"
+        fi
+        echo "   some avg60:   IO ${IO_PSI}%  /  Mem ${MEM_PSI}%"
+        echo ""
+    fi
+
+    # ── Free space ──
+    FREE_KB=$(df --output=avail -B1 "$SWAP_DIR" 2>/dev/null | tail -1)
+    FREE_MB=$(( FREE_KB / 1024 ))
+    echo -e "${YELLOW}◆ Free space on $SWAP_DIR: ${FREE_MB} MiB${NC}"
+
+    echo ""
+    echo -e "${BLUE}─────────────────────────────────────────────────────────────────${NC}"
+    echo "Press Ctrl+C to exit."
+
+    sleep "$REFRESH_SECONDS"
+done
