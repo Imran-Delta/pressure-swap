@@ -1,0 +1,20 @@
+# Build artifacts from makepkg
+pkg/
+src/
+*.pkg.tar
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.pkg.tar.gz
+
+# Tarballs
+*.tar.gz
+*.tar.zst
+
+# Editor / OS junk
+*~
+.*.swp
+.DS_Store
+Thumbs.db
+
+# Logs (if ever placed in repo)
+*.log
